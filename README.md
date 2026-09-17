@@ -71,6 +71,26 @@ make detector-test
 
 Some integration checks require the Compose stack. Each report records its scenario, commands, and observed result.
 
+## Evidence behind project claims
+
+The [Flink job](jobs/cdn-analytics/src/main/java/com/streampulse/analytics/CdnAnalyticsJob.java),
+[event-ID deduplicator](jobs/cdn-analytics/src/main/java/com/streampulse/analytics/parse/EventIdDeduplicator.java),
+and [delivery parser](jobs/cdn-analytics/src/main/java/com/streampulse/analytics/parse/DeliveryEventParser.java)
+implement the event-time and dead-letter path. The
+[Kafka/Flink integration report](experiments/reports/flink-integration/report.md)
+records the fixed-seed counts; the
+[lateness experiment](experiments/results/watermark-lateness/report.md)
+records one allowed-late revision and one too-late audit event.
+
+The [ClickHouse schema](infra/clickhouse/init/001_schema.sql) and
+[integration report](experiments/reports/clickhouse-grafana/report.md) support
+the storage and dashboard claims. The Go
+[recommendation service](services/recommendation-api/internal/app/service.go),
+[scorer](services/recommendation-api/internal/scoring/scorer.go), and
+[end-to-end report](experiments/reports/recommendation-api/report.md) support
+the shadow-recommendation claims. These are local synthetic results, not
+production throughput or evidence of improved live routing.
+
 ## Repository layout
 
 | Path | Purpose |

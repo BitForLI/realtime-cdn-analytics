@@ -2,6 +2,18 @@
 
 StreamPulse is a local CDN analytics system built to study event-time behaviour under late data, duplicate delivery, replay, and component failure. It turns synthetic delivery, routing, and player events into ClickHouse metrics, Grafana dashboards, and short-lived routing recommendations that remain in shadow mode.
 
+## Product at a glance
+
+| | |
+| --- | --- |
+| **Users** | CDN and platform engineers investigating delivery quality and routing decisions |
+| **Problem** | Late, duplicated, invalid, or replayed events can produce misleading operational metrics |
+| **Input** | Versioned synthetic CDN delivery, routing, and player events |
+| **Output** | Event-time metrics, a Grafana dashboard, and explainable shadow-routing recommendations |
+| **Safety boundary** | Recommendations are recorded for review and never change live DNS routing |
+
+The main product decision is to keep analysis outside the request path. StreamPulse can explain what it would recommend, why, and for how long without making content delivery depend on the analytics pipeline.
+
 The project began from an Apache Flink operations playground. The event contracts, workload generator, analytics jobs, ClickHouse pipeline, recommendation service, experiments, and dashboard were added in this repository.
 
 ## Architecture

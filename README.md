@@ -1,6 +1,6 @@
-# StreamPulse
+# Real-Time CDN Analytics
 
-StreamPulse is a local CDN analytics system built to study event-time behaviour under late data, duplicate delivery, replay, and component failure. It turns synthetic delivery, routing, and player events into ClickHouse metrics, Grafana dashboards, and short-lived routing recommendations that remain in shadow mode.
+This local CDN analytics system studies event-time behaviour under late data, duplicate delivery, replay, and component failure. It turns synthetic delivery, routing, and player events into ClickHouse metrics, Grafana dashboards, and short-lived routing recommendations that remain in shadow mode.
 
 ## Product at a glance
 

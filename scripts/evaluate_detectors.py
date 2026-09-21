@@ -4,140 +4,36 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
-import re
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-import yaml
-
-
-NODE_FAULT_TYPES = {
-    "node_latency_spike",
-    "node_5xx_spike",
-    "isp_node_degradation",
-    "capacity_pressure",
-}
-
-
-@dataclass(frozen=True)
-class Fault:
-    fault_type: str
-    start: datetime
-    end: datetime
-    target: str
-    network: str | None
-
-
-@dataclass(frozen=True)
-class Metric:
-    run_id: str
-    window_start: datetime
-    window_end: datetime
-    location: str
-    network_id: str
-    node_id: str
-    requests: int
-    error_rate: float
-    cache_hit_ratio: float
-    p95_ttfb_ms: float
-
-    @property
-    def key(self) -> tuple[str, str, str]:
-        return self.location, self.network_id, self.node_id
-
-
-def parse_time(value: str) -> datetime:
-    normalized = value.strip().replace(" ", "T")
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    parsed = datetime.fromisoformat(normalized)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def parse_duration(value: str) -> timedelta:
-    units = {"ms": 0.001, "s": 1, "m": 60, "h": 3600}
-    normalized = value.strip().lower()
-    parts = re.findall(r"(\d+(?:\.\d+)?)(ms|s|m|h)", normalized)
-    if not parts or "".join(number + unit for number, unit in parts) != normalized:
-        raise ValueError(f"unsupported duration: {value}")
-    return timedelta(seconds=sum(float(number) * units[unit] for number, unit in parts))
-
-
-def load_faults(path: Path, manifest_path: Path | None = None) -> list[Fault]:
-    if manifest_path is not None:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-        return [
-            Fault(
-                fault_type=str(label["type"]),
-                start=parse_time(str(label["start"])),
-                end=parse_time(str(label["end"])),
-                target=str(label.get("target", "")),
-                network=str(label["network"]) if label.get("network") else None,
-            )
-            for label in manifest.get("expected_label_windows", [])
-            if label["type"] in NODE_FAULT_TYPES
-        ]
-
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    start = parse_time(str(payload["start_time"]))
-    faults = []
-    for scenario in payload.get("scenarios", []):
-        if scenario["type"] not in NODE_FAULT_TYPES:
-            continue
-        fault_start = start + parse_duration(str(scenario["at"]))
-        faults.append(
-            Fault(
-                fault_type=scenario["type"],
-                start=fault_start,
-                end=fault_start + parse_duration(str(scenario["duration"])),
-                target=str(scenario.get("target", "")),
-                network=str(scenario["network"]) if scenario.get("network") else None,
-            )
-        )
-    return faults
-
-
-def load_metrics(run_id: str, path: Path) -> list[Metric]:
-    metrics: list[Metric] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-            metrics.append(
-                Metric(
-                    run_id=run_id,
-                    window_start=parse_time(str(row["window_start"])),
-                    window_end=parse_time(str(row["window_end"])),
-                    location=str(row["location"]),
-                    network_id=str(row["network_id"]),
-                    node_id=str(row["node_id"]),
-                    requests=int(row["requests"]),
-                    error_rate=float(row["error_5xx_rate"]),
-                    cache_hit_ratio=float(row["cache_hit_ratio"]),
-                    p95_ttfb_ms=float(row["ttfb_p95_ms"]),
-                )
-            )
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-            raise ValueError(f"{path}:{line_number}: {error}") from error
-    return sorted(metrics, key=lambda metric: (metric.window_end, metric.key))
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+try:
+    from scripts.detector_data import (
+        Fault,
+        Metric,
+        load_faults,
+        load_metrics,
+        parse_duration,
+        parse_time,
+        sha256,
+    )
+    from scripts.detector_reporting import aggregate, write_markdown
+except ModuleNotFoundError:  # Support direct execution as scripts/evaluate_detectors.py.
+    from detector_data import (  # type: ignore[no-redef]
+        Fault,
+        Metric,
+        load_faults,
+        load_metrics,
+        parse_duration,
+        parse_time,
+        sha256,
+    )
+    from detector_reporting import aggregate, write_markdown  # type: ignore[no-redef]
 
 
 def fault_matches(metric: Metric, fault: Fault) -> bool:
@@ -382,100 +278,6 @@ def evaluate_run(
             }
         )
     return result
-
-
-def aggregate(runs: list[dict[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    metric_names = (
-        "precision",
-        "recall",
-        "f1",
-        "false_alerts_per_hour",
-        "detection_delay_p50_seconds",
-        "detection_delay_p95_seconds",
-        "recovery_p50_seconds",
-        "recovery_p95_seconds",
-        "small_traffic_false_positives",
-        "small_traffic_false_positive_rate",
-        "missed_faults",
-    )
-    for strategy in ("fixed", "rule", "ewma_mad"):
-        values = [run["strategies"][strategy] for run in runs]  # type: ignore[index]
-        strategy_result = {}
-        for metric in metric_names:
-            numbers = [float(value[metric]) for value in values if value[metric] is not None]
-            strategy_result[metric] = (
-                {
-                    "mean": round(statistics.mean(numbers), 6),
-                    "median": round(statistics.median(numbers), 6),
-                    "min": min(numbers),
-                    "max": max(numbers),
-                    "sample_count": len(numbers),
-                }
-                if numbers
-                else {"mean": None, "median": None, "min": None, "max": None, "sample_count": 0}
-            )
-        result[strategy] = strategy_result
-    return result
-
-
-def write_markdown(summary: dict[str, object], path: Path) -> None:
-    lines = [
-        "# Detector comparison",
-        "",
-        "Synthetic, fixed-seed local evidence. Missing or weak results are retained.",
-        "",
-        f"Runs: **{summary['run_count']}**; three-run gate: **{summary['acceptance_run_count_met']}**; "
-        f"manifest evidence complete: **{summary['manifest_evidence_complete']}**.",
-        "",
-        "| Strategy | Precision mean/median/range | Recall mean/median/range | F1 mean/median/range | False alerts/hour mean | Detection P95 mean (s) |",
-        "|---|---:|---:|---:|---:|---:|",
-    ]
-    aggregate_rows = summary["aggregate"]  # type: ignore[index]
-    for strategy in ("fixed", "rule", "ewma_mad"):
-        item = aggregate_rows[strategy]
-        def spread(metric: str) -> str:
-            values = item[metric]
-            return f"{values['mean']:.6f}/{values['median']:.6f}/[{values['min']:.6f}, {values['max']:.6f}]"
-
-        delay = item["detection_delay_p95_seconds"]["mean"]
-        lines.append(
-            f"| `{strategy}` | {spread('precision')} | {spread('recall')} | {spread('f1')} | "
-            f"{item['false_alerts_per_hour']['mean']:.6f} | {delay if delay is not None else 'N/A'} |"
-        )
-    lines.extend(
-        [
-            "",
-            "## Per-run results",
-            "",
-            "| Run | Strategy | Precision | Recall | F1 | Missed faults |",
-            "|---|---|---:|---:|---:|---:|",
-        ]
-    )
-    for run in summary["runs"]:  # type: ignore[index]
-        for strategy in ("fixed", "rule", "ewma_mad"):
-            item = run["strategies"][strategy]
-            lines.append(
-                f"| `{run['run_id']}` | `{strategy}` | {item['precision']:.6f} | "
-                f"{item['recall']:.6f} | {item['f1']:.6f} | {item['missed_faults']} |"
-            )
-    lines.extend(
-        [
-            "",
-            "## Interpretation",
-            "",
-            "The fixed threshold and EWMA/MAD baseline tied on these deliberately strong synthetic faults; "
-            "this does not show that either generalizes to changing production traffic.",
-            "The combined rule was retained despite weak recall: requiring latency and error evidence together "
-            "missed latency-only and error-only windows.",
-            "Each raw node-metric file and manifest is SHA-256 identified in `summary.json`; per-window labels, "
-            "predictions, metrics, and reason codes are stored in the three `*-predictions.jsonl` files.",
-            "",
-            "Detection uses completed-window timestamps. EWMA/MAD sees only past windows; no future rows are included.",
-            "This report does not establish causal QoE improvement or production-scale performance.",
-        ]
-    )
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 def main() -> None:
